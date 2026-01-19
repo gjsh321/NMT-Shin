@@ -3,7 +3,7 @@ import json
 import torch
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
-from transformers import AutoTokenizer, AutoModel
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from tqdm import tqdm
 from sklearn.metrics import classification_report, accuracy_score
 from torch.cuda.amp import GradScaler, autocast
@@ -47,25 +47,6 @@ def collate_fn(batch, tokenizer, max_len=64):
     return enc, torch.tensor(labels)
 
 #모델 아키텍처 변경
-class SBertClassifier(nn.Module):
-    def __init__(self, model_name, num_classes=3, dnn_hidden=128, dropout=0.3):
-        super().__init__()
-        self.bert = AutoModel.from_pretrained(model_name, trust_remote_code=True)
-        self.dropout = nn.Dropout(dropout)
-        self.dnn = nn.Sequential(
-            nn.Linear(self.bert.config.hidden_size, dnn_hidden),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            # [변경] 출력 뉴런 수를 1 -> 3 (num_classes)으로 변경
-            nn.Linear(dnn_hidden, num_classes) 
-            # [변경] Sigmoid 제거! (CrossEntropyLoss가 내부적으로 Softmax 처리함)
-        )
-
-    def forward(self, input_ids, attention_mask):
-        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        cls_emb = outputs.last_hidden_state[:, 0]
-        x = self.dropout(cls_emb)
-        return self.dnn(x) # (Batch_size, 3) 크기의 Logits 반환
 
 # --- 데이터 준비 (경로 주의!) ---
 # 교수님 코드는 하나의 파일을 읽는 구조이므로, 미리 파일이 합쳐져 있어야 합니다.
@@ -84,10 +65,9 @@ else:
 
     #학습 준비
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = SBertClassifier(model_name=model_name, num_classes=num_classes).to(device)
+    model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=num_classes, trust_remote_code=True).to(device)
 
-    # [변경] BCELoss -> CrossEntropyLoss
-    criterion = nn.CrossEntropyLoss() 
+    # AutoModelForSequenceClassification은 내부적으로 CrossEntropyLoss 처리 
     optimizer = AdamW(model.parameters(), lr=2e-5, weight_decay=0.01)
     #grad 16비트 설정
     scaler = GradScaler() 
@@ -111,8 +91,8 @@ for epoch in range(epochs):
         # [핵심 수정] autocast로 감싸서 FP16 연산 수행
         # enabled=True, dtype=torch.float16을 명시하여 FP16 강제 사용
         with autocast():
-            outputs = model(enc['input_ids'], enc['attention_mask'])
-            loss = criterion(outputs, labels)
+            outputs = model(input_ids=enc['input_ids'], attention_mask=enc['attention_mask'], labels=labels)
+            loss = outputs.loss
         
         # [핵심 수정] Backpropagation 과정도 Scaler를 통해 수행
         scaler.scale(loss).backward()
@@ -133,10 +113,10 @@ for epoch in range(epochs):
                 for k in enc:
                     enc[k] = enc[k].to(device)
                 
-                outputs = model(enc['input_ids'], enc['attention_mask'])
+                outputs = model(input_ids=enc['input_ids'], attention_mask=enc['attention_mask'])
                 
                 # [변경] 0.5보다 크다가 아니라, 가장 높은 점수를 가진 클래스 선택 (argmax)
-                preds = torch.argmax(outputs, dim=1).cpu().numpy()
+                preds = torch.argmax(outputs.logits, dim=1).cpu().numpy()
                 all_preds.extend(preds)
                 all_labels.extend(labels.numpy())
 
