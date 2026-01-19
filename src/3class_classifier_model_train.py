@@ -7,6 +7,7 @@ from transformers import AutoTokenizer, AutoModel
 from tqdm import tqdm
 from sklearn.metrics import classification_report, accuracy_score
 from torch.cuda.amp import GradScaler, autocast
+from torch.optim import AdamW
 #하이퍼 파라미터 설정
 model_name = "klue/roberta-base"
 batch_size = 32
@@ -87,7 +88,7 @@ else:
 
     # [변경] BCELoss -> CrossEntropyLoss
     criterion = nn.CrossEntropyLoss() 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
+    optimizer = AdamW(model.parameters(), lr=2e-5, weight_decay=0.01)
     #grad 16비트 설정
     scaler = GradScaler() 
     print(f"🚀 학습 시작 (Device: {device}) - FP16 Mode ON")
