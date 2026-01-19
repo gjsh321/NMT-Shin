@@ -16,7 +16,7 @@ max_len = 256
 num_classes = 3  # [변경] 클래스 개수 3개 (0:Human, 1:NMT, 2:GPT)
 save_dir = "./model/"
 os.makedirs(save_dir, exist_ok=True)
-model_save_path = os.path.join(save_dir, "kr_sbert_3class_dnn.pt")
+model_save_path = os.path.join(save_dir, model_name.replace("/", "_") + ".pt")
 
 #데이터셋 3개 클래스로 라벨링
 class MyDataset(Dataset):
