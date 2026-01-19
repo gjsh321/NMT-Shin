@@ -3,7 +3,7 @@ import json
 import torch
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, get_linear_schedule_with_warmup
 from tqdm import tqdm
 from sklearn.metrics import classification_report, accuracy_score
 from torch.cuda.amp import GradScaler, autocast
@@ -14,6 +14,8 @@ batch_size = 32
 lr = 2e-5
 epochs = 10
 max_len = 256
+warmup_ratio = 0.1  # 전체 학습의 10%를 warmup으로
+early_stop_patience = 3  # 3 epoch 개선 없으면 중단
 num_classes = 3  # [변경] 클래스 개수 3개 (0:Human, 1:NMT, 2:GPT)
 save_dir = "./model/"
 os.makedirs(save_dir, exist_ok=True)
@@ -58,7 +60,14 @@ test_dataset = MyDataset("./data/test_merged.jsonl")
 if len(train_dataset) == 0:
     print("❌ 학습 데이터가 로드되지 않았습니다. 경로를 확인해주세요.")
 else:
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
+    # Train/Val split (8:2)
+    train_size = int(0.8 * len(train_dataset))
+    val_size = len(train_dataset) - train_size
+    train_split, val_split = torch.utils.data.random_split(train_dataset, [train_size, val_size])
+    
+    train_loader = DataLoader(train_split, batch_size=batch_size, shuffle=True,
+                            collate_fn=lambda b: collate_fn(b, tokenizer, max_len))
+    val_loader = DataLoader(val_split, batch_size=batch_size, shuffle=False,
                             collate_fn=lambda b: collate_fn(b, tokenizer, max_len))
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False,
                             collate_fn=lambda b: collate_fn(b, tokenizer, max_len))
@@ -68,10 +77,22 @@ else:
     model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=num_classes, trust_remote_code=True).to(device)
 
     # AutoModelForSequenceClassification은 내부적으로 CrossEntropyLoss 처리 
-    optimizer = AdamW(model.parameters(), lr=2e-5, weight_decay=0.01)
+    optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.01)
+    
+    # Learning Rate Scheduler (warmup + linear decay)
+    total_steps = len(train_loader) * epochs
+    warmup_steps = int(total_steps * warmup_ratio)
+    scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=total_steps)
+    
     #grad 16비트 설정
     scaler = GradScaler() 
+    
+    # Early Stopping 변수
+    best_val_accuracy = 0
+    patience_counter = 0
+    
     print(f"🚀 학습 시작 (Device: {device}) - FP16 Mode ON")
+    print(f"Total steps: {total_steps}, Warmup steps: {warmup_steps}")
 
 #학습
 for epoch in range(epochs):
@@ -98,10 +119,42 @@ for epoch in range(epochs):
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
+        scheduler.step()  # Learning rate scheduler update
         
         total_loss += loss.item() * labels.size(0)
     
-    print(f"Epoch {epoch+1} loss: {total_loss / len(train_dataset):.4f}")
+    print(f"Epoch {epoch+1} loss: {total_loss / len(train_split):.4f}")
+    
+    # Validation (매 epoch마다)
+    model.eval()
+    val_preds, val_labels = [], []
+    with torch.no_grad():
+        for batch in tqdm(val_loader, desc="Validation", leave=False):
+            enc, labels = batch
+            for k in enc:
+                enc[k] = enc[k].to(device)
+            outputs = model(input_ids=enc['input_ids'], attention_mask=enc['attention_mask'])
+            preds = torch.argmax(outputs.logits, dim=1).cpu().numpy()
+            val_preds.extend(preds)
+            val_labels.extend(labels.numpy())
+    
+    val_accuracy = accuracy_score(val_labels, val_preds)
+    print(f"Validation Accuracy: {val_accuracy:.4f}")
+    
+    # Early Stopping 로직
+    if val_accuracy > best_val_accuracy:
+        best_val_accuracy = val_accuracy
+        patience_counter = 0
+        # 최고 성능 모델 저장
+        torch.save(model.state_dict(), model_save_path)
+        print(f"✅ 최고 성능 모델 저장 (Accuracy: {best_val_accuracy:.4f})")
+    else:
+        patience_counter += 1
+        print(f"No improvement. Patience: {patience_counter}/{early_stop_patience}")
+        
+        if patience_counter >= early_stop_patience:
+            print(f"🛑 Early Stopping! 최고 성능: {best_val_accuracy:.4f}")
+            break
 
     #평가 로직 변경 (마지막 epoch에만 결과 출력)
     if epoch == epochs - 1:
@@ -125,6 +178,5 @@ for epoch in range(epochs):
         # target_names 매핑: 0=Human, 1=NMT, 2=GPT
         print(classification_report(all_labels, all_preds, digits=4, target_names=['Human', 'NMT', 'GPT']))
 
-        # 모델 저장
-        torch.save(model.state_dict(), model_save_path)
-        print(f"모델 저장 완료: {model_save_path}")
+        # 모델은 이미 저장됨 (Early Stopping 또는 마지막 epoch)
+        print(f"✅ 최종 평가 완료")
