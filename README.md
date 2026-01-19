@@ -1,19 +1,11 @@
-## 1. DNN 실행 방법
- python dnn_end2end.py
- 
-## 2. XGBoost 실행 방법
- python xgb_emb.py
+🏆 최종 결과
+정확도: 0.5725190839694656
+              precision    recall  f1-score   support
 
-## 3. Saliency 실행 방법
- python saliency_end2end.py
+       Human     0.4000    0.0455    0.0816        88
+         NMT     0.4387    0.7907    0.5643        86
+         GPT     0.8041    0.8864    0.8432        88
 
-## 4. t-SNE 실행 방법
- python tsne_emb.py
-
-## Data
-데이터는 jsonl 형태로 되어있다.
-- stype : sentence와 paragraph이 있다.
-- agent : M1, M2 와 같이 M으로 시작하는 것은 사람을, gpt 등으로 시작하는 것은 기계번역을 의미한다.
-- tr : 번역문
-- doc : orginal 문서 이름
-- embedding : 번역문을 embedding으로 만든결과이다. ( embedding으로 바꾸기 위해 여러가지 방법을 쓸 수 있다)
+    accuracy                         0.5725       262
+   macro avg     0.5476    0.5742    0.4964       262
+weighted avg     0.5484    0.5725    0.4959       262
