@@ -1,19 +1,23 @@
-## 1. DNN 실행 방법
- python dnn_end2end.py
- 
-## 2. XGBoost 실행 방법
- python xgb_emb.py
+🏆 Ensemble Test Accuracy: 0.8400
 
-## 3. Saliency 실행 방법
- python saliency_end2end.py
 
-## 4. t-SNE 실행 방법
- python tsne_emb.py
 
-## Data
-데이터는 jsonl 형태로 되어있다.
-- stype : sentence와 paragraph이 있다.
-- agent : M1, M2 와 같이 M으로 시작하는 것은 사람을, gpt 등으로 시작하는 것은 기계번역을 의미한다.
-- tr : 번역문
-- doc : orginal 문서 이름
-- embedding : 번역문을 embedding으로 만든결과이다. ( embedding으로 바꾸기 위해 여러가지 방법을 쓸 수 있다)
+최종 앙상블 분류 결과:
+
+              precision    recall  f1-score   support
+
+
+
+       Human     0.9093    0.8324    0.8692      1217
+
+         NMT     0.7822    0.7992    0.7906      1245
+
+         GPT     0.8374    0.8845    0.8603      1351
+
+
+
+    accuracy                         0.8400      3813
+
+   macro avg     0.8430    0.8387    0.8400      3813
+
+weighted avg     0.8424    0.8400    0.8404
