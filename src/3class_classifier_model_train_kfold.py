@@ -23,9 +23,9 @@ early_stop_patience = 5
 n_splits = 5  # K-fold 분할 수
 dropout = 0.4  # Dropout 비율
 num_classes = 3
-save_dir = "./model/"
+save_dir = "./model/kfold/"
 os.makedirs(save_dir, exist_ok=True)
-model_save_path = os.path.join(save_dir, model_name.replace("/", "_") + ".pt")
+model_save_path = os.path.join(save_dir, "fold")
 
 #데이터셋 3개 클래스로 라벨링
 class MyDataset(Dataset):
@@ -163,7 +163,7 @@ else:
             if val_accuracy > best_val_accuracy:
                 best_val_accuracy = val_accuracy
                 patience_counter = 0
-                fold_model_path = model_save_path.replace(".pt", f"_fold{fold}.pt")
+                fold_model_path = os.path.join(save_dir, f"best_model_fold{fold}.pt")
                 torch.save(model.state_dict(), fold_model_path)
             else:
                 patience_counter += 1
@@ -176,7 +176,7 @@ else:
         print(f"Fold {fold} Best Validation Accuracy: {best_val_accuracy:.4f}")
         
         # Test 평가
-        fold_model_path = model_save_path.replace(".pt", f"_fold{fold}.pt")
+        fold_model_path = os.path.join(save_dir, f"best_model_fold{fold}.pt")
         model.load_state_dict(torch.load(fold_model_path))
         
         model.eval()
@@ -216,3 +216,4 @@ else:
     print(classification_report(all_fold_labels[0], ensemble_preds, digits=4, target_names=['Human', 'NMT', 'GPT']))
     
     print(f"\n✅ K-Fold 검증 완료")
+    print(f"모델 저장 위치: {save_dir}")
