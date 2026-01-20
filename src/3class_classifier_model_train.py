@@ -11,15 +11,16 @@ from sklearn.model_selection import KFold
 from torch.cuda.amp import GradScaler, autocast
 from torch.optim import AdamW
 from collections import Counter
+from scipy import stats
 
 #하이퍼 파라미터 설정
-model_name = "klue/roberta-large"
+model_name = "klue/roberta-base"
 batch_size = 16
 lr = 1e-5
-epochs = 20
-max_len = 256
-warmup_ratio = 0.05
-early_stop_patience = 5
+epochs = 5
+max_len = 128
+warmup_ratio = 0.1
+early_stop_patience = 3
 n_splits = 5  # K-fold 분할 수
 dropout = 0.4  # Dropout 비율
 num_classes = 3
@@ -102,7 +103,6 @@ else:
         label_counts = Counter(train_labels)
         total_samples = len(train_labels)
         class_weights = torch.tensor([total_samples / (num_classes * label_counts.get(i, 1)) for i in range(num_classes)], dtype=torch.float).to(device)
-        print(f"Class weights: {class_weights}")
         
         # Learning Rate Scheduler
         total_steps = len(train_loader) * epochs
@@ -196,6 +196,8 @@ else:
         
         fold_acc = accuracy_score(fold_labels, fold_preds)
         print(f"Fold {fold} Test Accuracy: {fold_acc:.4f}")
+        print(f"\nFold {fold} 분류 결과:")
+        print(classification_report(fold_labels, fold_preds, digits=4, target_names=['Human', 'NMT', 'GPT']))
     
     # 최종 결과
     print(f"\n{'='*60}")
@@ -206,13 +208,19 @@ else:
         print(f"  Fold {i}: {acc:.4f}")
     print(f"  평균: {np.mean(fold_results):.4f} ± {np.std(fold_results):.4f}\n")
     
-    # Test 앙상블: 모든 fold predictions 평균
-    ensemble_preds = np.mean(all_fold_preds, axis=0)
-    ensemble_preds = np.argmax(ensemble_preds, axis=1)
+    # Test 앙상블: 모든 fold predictions 투표
+    ensemble_preds = []
+    for i in range(len(all_fold_labels[0])):
+        # 각 샘플에 대해 5개 fold의 예측값을 모아서 다수결
+        votes = [all_fold_preds[fold][i] for fold in range(n_splits)]
+        ensemble_pred = np.bincount(votes).argmax()
+        ensemble_preds.append(ensemble_pred)
+    
+    ensemble_preds = np.array(ensemble_preds)
     
     test_acc = accuracy_score(all_fold_labels[0], ensemble_preds)
     print(f"\n🏆 Ensemble Test Accuracy: {test_acc:.4f}")
-    print("\n최종 분류 결과:")
+    print("\n최종 앙상블 분류 결과:")
     print(classification_report(all_fold_labels[0], ensemble_preds, digits=4, target_names=['Human', 'NMT', 'GPT']))
     
     print(f"\n✅ K-Fold 검증 완료")
