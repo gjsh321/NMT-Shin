@@ -1,0 +1,120 @@
+import os
+import json
+import torch
+import numpy as np
+import matplotlib.pyplot as plt
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from sklearn.manifold import TSNE
+from tqdm import tqdm
+from captum.attr import IntegratedGradients
+
+# 1. 경로 설정
+BASE_DIR = "/data/class/NLP2025/shh/NMT-Shin"
+DATA_PATH = os.path.join(BASE_DIR, "data/final_combined_train.jsonl")
+RESULT_DIR = os.path.join(BASE_DIR, "result")
+os.makedirs(RESULT_DIR, exist_ok=True)
+
+model_name = "klue/roberta-large"
+num_classes = 3
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+fold_paths = [os.path.join(BASE_DIR, "model", f"klue_roberta-large_fold{i}.pt") for i in range(1, 6)]
+
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+# 2. 개별 모델 로드 함수 (메모리 절약용)
+def get_model(path):
+    model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=num_classes)
+    model.load_state_dict(torch.load(path, map_location=device))
+    model.to(device)
+    model.eval()
+    return model
+
+# 3. 데이터 로드
+with open(DATA_PATH, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+    import random
+    random.seed(42)
+    sample_lines = random.sample(lines, min(len(lines), 300)) # 메모리를 위해 300개로 조정
+
+all_ensemble_logits = []
+all_labels = []
+output_jsonl_path = os.path.join(RESULT_DIR, "ensemble_xai_analysis.jsonl")
+
+print("🔍 순차적 앙상블 분석 시작 (메모리 최적화 모드)...")
+
+with open(output_jsonl_path, "w", encoding="utf-8") as f_out:
+    for line in tqdm(sample_lines):
+        d = json.loads(line)
+        text, label = d['tr'], int(d['label'])
+        
+        inputs = tokenizer(text, return_tensors='pt', truncation=True, max_length=128).to(device)
+        input_ids = inputs['input_ids']
+        attention_mask = inputs['attention_mask']
+        
+        combined_logits = np.zeros((1, num_classes))
+        combined_ig_scores = None
+        
+        # 모델을 하나씩 로드하고 계산 후 메모리 비우기
+        for path in fold_paths:
+            model = get_model(path)
+            
+            # 임베딩 추출
+            input_embeds = model.roberta.embeddings.word_embeddings(input_ids)
+            
+            # IG 계산용 함수 (Roberta 구조 맞춤)
+            def forward_func(embeds, mask):
+                return model(inputs_embeds=embeds, attention_mask=mask).logits
+
+            ig = IntegratedGradients(forward_func)
+            
+            # n_steps를 20으로 낮춰 메모리 절약
+            attr = ig.attribute(input_embeds, target=label, additional_forward_args=(attention_mask,), n_steps=20)
+            
+            with torch.no_grad():
+                logits = model(input_ids=input_ids, attention_mask=attention_mask).logits
+            
+            combined_logits += logits.cpu().numpy()
+            
+            current_ig = attr.sum(dim=-1).squeeze(0).cpu().detach().numpy()
+            if combined_ig_scores is None:
+                combined_ig_scores = current_ig
+            else:
+                combined_ig_scores += current_ig
+            
+            # 모델 메모리 해제
+            del model
+            del ig
+            torch.cuda.empty_cache() 
+
+        # 앙상블 평균 계산
+        avg_logits = combined_logits / 5
+        avg_ig_scores = combined_ig_scores / 5
+        pred_label = np.argmax(avg_logits)
+        
+        all_ensemble_logits.append(avg_logits)
+        all_labels.append(label)
+        
+        tokens = tokenizer.convert_ids_to_tokens(input_ids[0])
+        result = {
+            "text": text, "true_label": label, "pred_label": int(pred_label),
+            "analysis": [{"token": t, "score": float(s)} for t, s in zip(tokens, avg_ig_scores) 
+                         if t not in [tokenizer.cls_token, tokenizer.sep_token, tokenizer.pad_token]]
+        }
+        f_out.write(json.dumps(result, ensure_ascii=False) + "\n")
+
+# 4. t-SNE (이후 동일)
+print("🎨 t-SNE 그래프 생성 중...")
+logits_np = np.vstack(all_ensemble_logits)
+tsne = TSNE(n_components=2, random_state=42)
+emb_2d = tsne.fit_transform(logits_np)
+
+plt.figure(figsize=(10, 7))
+names = ['Human', 'NMT', 'GPT']
+colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
+for i in range(3):
+    idx = np.array(all_labels) == i
+    plt.scatter(emb_2d[idx, 0], emb_2d[idx, 1], c=colors[i], label=names[i], alpha=0.5)
+plt.legend()
+plt.title("Ensemble Model Decision Space (Memory Optimized)")
+plt.savefig(os.path.join(RESULT_DIR, "ensemble_tsne_final.png"))
+print("✅ 분석 완료!")
